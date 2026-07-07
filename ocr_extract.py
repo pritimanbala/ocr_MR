@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
+from importlib.util import find_spec
 import json
 import re
 import sys
@@ -62,7 +63,7 @@ class PageText:
 
 def import_optional(module_name: str) -> Any:
     """Import an optional dependency with an actionable error message."""
-    if importlib.util.find_spec(module_name) is None:
+    if find_spec(module_name) is None:
         raise RuntimeError(
             f"Missing optional dependency '{module_name}'. Install dependencies with: "
             "python -m pip install -r requirements.txt"

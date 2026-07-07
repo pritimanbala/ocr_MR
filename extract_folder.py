@@ -43,7 +43,8 @@ def output_path_for(
     """Build the mirrored output path, with a hashed fallback for Windows path limits."""
     relative = input_file.relative_to(input_root)
     mirrored = output_root / relative.parent / f"{relative.name}.extracted.json"
-    if max_output_path_length <= 0 or len(str(mirrored)) <= max_output_path_length:
+    absolute_mirrored = mirrored if mirrored.is_absolute() else Path.cwd() / mirrored
+    if max_output_path_length <= 0 or len(str(absolute_mirrored)) <= max_output_path_length:
         return mirrored
 
     digest = hashlib.sha1(str(relative).encode("utf-8")).hexdigest()

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/extracted_parameters.schema.json",
+  "title": "Engineering Document Extracted Parameters",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["parameter", "value"],
+    "properties": {
+      "section": { "type": "string" },
+      "parameter": { "type": "string", "minLength": 1 },
+      "operator": { "type": "string", "enum": ["<", "<=", ">", ">=", "=", "≈"] },
+      "value": {
+        "anyOf": [
+          { "type": "null" },
+          { "type": "boolean" },
+          { "type": "number" },
+          { "type": "string" },
+          { "type": "array" },
+          { "type": "object" }
+        ]
+      },
+      "unit": { "type": "string" },
+      "mandatory": { "type": "boolean" },
+      "remarks": { "type": "string" }
+    }
+  }
+}

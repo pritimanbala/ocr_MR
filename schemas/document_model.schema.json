@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/document_model.schema.json",
+  "title": "Phase 1 Engineering Document Object Model",
+  "type": "object",
+  "required": ["schema_version", "parser", "source_path", "page_count", "metadata", "pages"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "parser": { "type": "string" },
+    "source_path": { "type": "string" },
+    "page_count": { "type": "integer", "minimum": 0 },
+    "metadata": { "type": "object" },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["number", "bbox", "rotation", "text_blocks", "text_spans", "words", "tokens", "drawings", "vector_lines", "rectangles", "images"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "bbox": { "$ref": "#/$defs/bbox" },
+          "rotation": { "type": "integer" },
+          "text_blocks": { "type": "array" },
+          "text_spans": { "type": "array" },
+          "words": { "type": "array" },
+          "tokens": { "type": "array" },
+          "drawings": { "type": "array" },
+          "vector_lines": { "type": "array" },
+          "rectangles": { "type": "array" },
+          "images": { "type": "array" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bbox": {
+      "type": "object",
+      "required": ["x0", "y0", "x1", "y1"],
+      "properties": {
+        "x0": { "type": "number" },
+        "y0": { "type": "number" },
+        "x1": { "type": "number" },
+        "y1": { "type": "number" },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "area": { "type": "number" }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Project-specific folder (excluded from GitHub as requested)
+Pumps/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Lock files (optional - remove these two lines if you want to keep lock files tracked)
+# package-lock.json
+# .package-lock.json
+
+# Build output
+dist/
+build/

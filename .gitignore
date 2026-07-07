@@ -28,4 +28,8 @@ Thumbs.db
 
 # Build output
 dist/
-build/
+build/__pycache__/
+*.py[cod]
+.venv/
+.env
+*.jsonl

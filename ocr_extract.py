@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""OCR and heuristic parameter extraction for engineering datasheet PDFs.
+"""OCR and heuristic parameter extraction for engineering documents.
 
 The extractor works in two stages:
-1. Extract page text from digital PDFs with pdfplumber, or OCR scanned pages with
-   pdf2image + pytesseract when text is unavailable.
+1. Recover text from common engineering document formats. Digital PDFs use
+   pdfplumber, scanned PDFs and images use Tesseract OCR, and Office/text files
+   use format-specific parsers.
 2. Convert the recovered text into a JSON array of engineering parameters using
    conservative, rule-based parsing for labels, values, operators, units,
    booleans, mandatory markers, and checkboxes.
@@ -15,6 +16,7 @@ used directly or as preprocessing for a document-intelligence model.
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib
 import json
 import re
@@ -45,6 +47,10 @@ KEY_VALUE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 TRAILING_UNIT_PATTERN = re.compile(rf"^(?P<number>-?\d+(?:,\d{{3}})*(?:\.\d+)?)\s*(?P<unit>{UNIT_PATTERN})$", re.IGNORECASE)
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm"}
+DOCUMENT_SUFFIXES = {".pdf", ".docx", ".pptx", *SPREADSHEET_SUFFIXES, *TEXT_SUFFIXES, *IMAGE_SUFFIXES}
 
 
 @dataclass
@@ -238,6 +244,79 @@ def extract_text_with_ocr(pdf_path: Path, dpi: int, language: str) -> list[PageT
     return pages
 
 
+def extract_image(image_path: Path, language: str) -> dict[str, Any]:
+    image = import_optional("PIL.Image")
+    pytesseract = import_optional("pytesseract")
+    with image.open(image_path) as opened_image:
+        text = pytesseract.image_to_string(opened_image, lang=language, config="--psm 6")
+    return build_result(image_path, [PageText(page=1, text=text, source="tesseract-image")])
+
+
+def extract_text_file(file_path: Path) -> dict[str, Any]:
+    text = file_path.read_text(encoding="utf-8", errors="replace")
+    if file_path.suffix.lower() in {".csv", ".tsv"}:
+        dialect = "excel-tab" if file_path.suffix.lower() == ".tsv" else "excel"
+        rows = [" | ".join(row) for row in csv.reader(text.splitlines(), dialect=dialect)]
+        text = "\n".join(rows)
+    return build_result(file_path, [PageText(page=1, text=text, source="text")])
+
+
+def extract_docx(docx_path: Path) -> dict[str, Any]:
+    docx = import_optional("docx")
+    document = docx.Document(str(docx_path))
+    lines: list[str] = []
+    lines.extend(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip())
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+            if any(cells):
+                lines.append(" | ".join(cells))
+    return build_result(docx_path, [PageText(page=1, text="\n".join(lines), source="python-docx")])
+
+
+def extract_pptx(pptx_path: Path) -> dict[str, Any]:
+    pptx = import_optional("pptx")
+    presentation = pptx.Presentation(str(pptx_path))
+    pages: list[PageText] = []
+    for index, slide in enumerate(presentation.slides, start=1):
+        lines: list[str] = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                lines.append(shape.text.strip())
+            if getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                    if any(cells):
+                        lines.append(" | ".join(cells))
+        pages.append(PageText(page=index, text="\n".join(lines), source="python-pptx"))
+    return build_result(pptx_path, pages)
+
+
+def extract_xlsx(xlsx_path: Path) -> dict[str, Any]:
+    openpyxl = import_optional("openpyxl")
+    workbook = openpyxl.load_workbook(str(xlsx_path), data_only=True, read_only=True)
+    pages: list[PageText] = []
+    for index, sheet in enumerate(workbook.worksheets, start=1):
+        rows: list[str] = []
+        for row in sheet.iter_rows(values_only=True):
+            values = ["" if value is None else str(value) for value in row]
+            if any(value.strip() for value in values):
+                rows.append(" | ".join(values).rstrip(" |"))
+        pages.append(PageText(page=index, text="\n".join(rows), source=f"openpyxl:{sheet.title}"))
+    workbook.close()
+    return build_result(xlsx_path, pages)
+
+
+def build_result(source_path: Path, pages: list[PageText]) -> dict[str, Any]:
+    combined_text = "\n".join(page.text for page in pages)
+    return {
+        "source_file": str(source_path),
+        "file_type": source_path.suffix.lower().lstrip("."),
+        "pages": [{"page": page.page, "source": page.source, "text": page.text} for page in pages],
+        "parameters": extract_parameters_from_text(combined_text),
+    }
+
+
 def extract_pdf(pdf_path: Path, force_ocr: bool = False, dpi: int = 300, language: str = "eng") -> dict[str, Any]:
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -248,20 +327,34 @@ def extract_pdf(pdf_path: Path, force_ocr: bool = False, dpi: int = 300, languag
     if force_ocr or not any(page.text.strip() for page in pages):
         pages = extract_text_with_ocr(pdf_path, dpi=dpi, language=language)
 
-    combined_text = "\n".join(page.text for page in pages)
-    return {
-        "source_file": str(pdf_path),
-        "pages": [{"page": page.page, "source": page.source, "text": page.text} for page in pages],
-        "parameters": extract_parameters_from_text(combined_text),
-    }
+    return build_result(pdf_path, pages)
+
+
+def extract_document(file_path: Path, force_ocr: bool = False, dpi: int = 300, language: str = "eng") -> dict[str, Any]:
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
+        return extract_pdf(file_path, force_ocr=force_ocr, dpi=dpi, language=language)
+    if suffix in IMAGE_SUFFIXES:
+        return extract_image(file_path, language=language)
+    if suffix in TEXT_SUFFIXES:
+        return extract_text_file(file_path)
+    if suffix == ".docx":
+        return extract_docx(file_path)
+    if suffix == ".pptx":
+        return extract_pptx(file_path)
+    if suffix in SPREADSHEET_SUFFIXES:
+        return extract_xlsx(file_path)
+    raise ValueError(f"Unsupported file type '{suffix}' for {file_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Extract engineering parameters from a PDF using text extraction and OCR fallback.")
-    parser.add_argument("pdf", type=Path, help="Path to the PDF file to process.")
+    parser = argparse.ArgumentParser(description="Extract engineering parameters from PDFs, images, Office files, and text files.")
+    parser.add_argument("document", type=Path, help="Path to the document file to process.")
     parser.add_argument("-o", "--output", type=Path, help="Write JSON results to this file instead of stdout.")
-    parser.add_argument("--force-ocr", action="store_true", help="OCR every page even if embedded PDF text is available.")
-    parser.add_argument("--dpi", type=int, default=300, help="Rasterization DPI for OCR mode. Default: 300.")
+    parser.add_argument("--force-ocr", action="store_true", help="OCR every PDF page even if embedded PDF text is available.")
+    parser.add_argument("--dpi", type=int, default=300, help="Rasterization DPI for PDF OCR mode. Default: 300.")
     parser.add_argument("--language", default="eng", help="Tesseract language code. Default: eng.")
     parser.add_argument("--parameters-only", action="store_true", help="Output only the extracted parameter array.")
     return parser
@@ -269,10 +362,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = extract_pdf(args.pdf, force_ocr=args.force_ocr, dpi=args.dpi, language=args.language)
+    result = extract_document(args.document, force_ocr=args.force_ocr, dpi=args.dpi, language=args.language)
     payload: Any = result["parameters"] if args.parameters_only else result
     output = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(output + "\n", encoding="utf-8")
     else:
         print(output)

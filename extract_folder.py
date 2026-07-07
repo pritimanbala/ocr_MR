@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ocr_extract import DOCUMENT_SUFFIXES, extract_document
+from ocr_extract import extract_document, is_supported_document
 
 DEFAULT_MAX_OUTPUT_PATH_LENGTH = 240
 
@@ -55,7 +55,7 @@ def output_path_for(
 def iter_supported_files(input_root: Path, include_temp_files: bool = False) -> list[Path]:
     files: list[Path] = []
     for path in input_root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in DOCUMENT_SUFFIXES:
+        if not path.is_file() or not is_supported_document(path):
             continue
         if not include_temp_files and is_temporary_office_file(path):
             continue

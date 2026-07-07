@@ -52,6 +52,22 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm"}
 DOCUMENT_SUFFIXES = {".pdf", ".docx", ".pptx", *SPREADSHEET_SUFFIXES, *TEXT_SUFFIXES, *IMAGE_SUFFIXES}
+DATABASE_FILENAMES = {"thumbs", "thumbs.db"}
+
+
+def is_supported_document(file_path: Path) -> bool:
+    """Return True when a file can be handled by the legacy extractor.
+
+    Windows Explorer may show the thumbnail cache as ``Thumbs`` without an
+    extension. These files are OLE database/cache files, so filename matching is
+    required in addition to suffix matching.
+    """
+    return file_path.suffix.lower() in DOCUMENT_SUFFIXES or file_path.name.lower() in DATABASE_FILENAMES
+
+
+def is_thumbs_database(file_path: Path) -> bool:
+    """Return True for Windows thumbnail database/cache files."""
+    return file_path.name.lower() in DATABASE_FILENAMES
 
 
 @dataclass
@@ -308,6 +324,73 @@ def extract_xlsx(xlsx_path: Path) -> dict[str, Any]:
     return build_result(xlsx_path, pages)
 
 
+def build_database_result(
+    file_path: Path,
+    database_format: str,
+    streams: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+    warning: str | None = None,
+) -> dict[str, Any]:
+    stat = file_path.stat()
+    database: dict[str, Any] = {
+        "format": database_format,
+        "streams": streams or [],
+        "metadata": metadata or {},
+        "note": "Windows thumbnail caches normally contain preview images, not extractable engineering text.",
+    }
+    if warning:
+        database["warning"] = warning
+    return {
+        "source_file": str(file_path),
+        "file_type": "thumbs_database",
+        "size_bytes": stat.st_size,
+        "pages": [],
+        "parameters": [],
+        "database": database,
+    }
+
+
+def extract_thumbs_database(file_path: Path) -> dict[str, Any]:
+    """Extract safe metadata from Windows Thumbs database/cache files.
+
+    Thumbs.db files usually store thumbnail images and OLE directory streams, not
+    engineering text. The extractor includes them in batch output so the file is
+    no longer silently skipped, but it does not OCR or dump binary thumbnail
+    bytes. Stream names and sizes are preserved for audit/debugging when the
+    optional ``olefile`` package is available.
+    """
+    if find_spec("olefile") is None:
+        return build_database_result(
+            file_path,
+            database_format="unknown_without_olefile",
+            warning="Install olefile to inspect OLE streams inside this Windows thumbnail database.",
+        )
+
+    olefile = importlib.import_module("olefile")
+    streams: list[dict[str, Any]] = []
+    metadata: dict[str, Any] = {}
+
+    try:
+        with olefile.OleFileIO(str(file_path)) as ole:
+            for stream_path in ole.listdir(streams=True, storages=False):
+                stream_name = "/".join(stream_path)
+                streams.append({"name": stream_name, "size": ole.get_size(stream_path)})
+
+            try:
+                meta = ole.get_metadata()
+                metadata = {
+                    key: str(value)
+                    for key, value in vars(meta).items()
+                    if value not in {None, ""} and not key.startswith("_")
+                }
+            except Exception:
+                metadata = {}
+    except Exception as exc:
+        return build_database_result(file_path, database_format="unreadable_ole_compound_file", warning=str(exc))
+
+    return build_database_result(file_path, database_format="ole_compound_file", streams=streams, metadata=metadata)
+
+
 def build_result(source_path: Path, pages: list[PageText]) -> dict[str, Any]:
     combined_text = "\n".join(page.text for page in pages)
     return {
@@ -335,6 +418,8 @@ def extract_document(file_path: Path, force_ocr: bool = False, dpi: int = 300, l
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
     suffix = file_path.suffix.lower()
+    if is_thumbs_database(file_path):
+        return extract_thumbs_database(file_path)
     if suffix == ".pdf":
         return extract_pdf(file_path, force_ocr=force_ocr, dpi=dpi, language=language)
     if suffix in IMAGE_SUFFIXES:

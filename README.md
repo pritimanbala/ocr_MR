@@ -90,19 +90,7 @@ The legacy extractor can process:
 - PowerPoint files: `.pptx` slide text and tables.
 - Excel files: `.xlsx`, `.xlsm`, `.xltx`, and `.xltm` sheets through `openpyxl`.
 - Text-like files: `.txt`, `.md`, `.csv`, `.tsv`, `.json`, `.xml`, `.html`, and `.htm`.
-
-Legacy binary Office formats such as `.doc`, `.ppt`, and `.xls` are not parsed directly. Convert them to modern formats first, or add a LibreOffice conversion step before extraction.
-
-## Supported inputs
-
-The extractor can process:
-
-- PDFs: embedded text with `pdfplumber`, falling back to OCR with `pdf2image` and `pytesseract` when needed.
-- Images: `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, and `.webp` through Tesseract OCR.
-- Word files: `.docx` paragraphs and tables.
-- PowerPoint files: `.pptx` slide text and tables.
-- Excel files: `.xlsx`, `.xlsm`, `.xltx`, and `.xltm` sheets through `openpyxl`.
-- Text-like files: `.txt`, `.md`, `.csv`, `.tsv`, `.json`, `.xml`, `.html`, and `.htm`.
+- Windows thumbnail database/cache files named `Thumbs` or `Thumbs.db`; the extractor records OLE stream metadata for auditability, but these files normally contain preview thumbnails rather than engineering text.
 
 Legacy binary Office formats such as `.doc`, `.ppt`, and `.xls` are not parsed directly. Convert them to modern formats first, or add a LibreOffice conversion step before extraction.
 
@@ -161,6 +149,7 @@ extracted_details/summary.json
 Notes for Windows batch runs:
 
 - Microsoft Office lock files beginning with `~$` are skipped by default because they are temporary files, not real documents. Use `--include-temp-files` only if you intentionally want to inspect them.
+- Files named `Thumbs` or `Thumbs.db` are included in legacy batch extraction and produce metadata JSON instead of being silently skipped.
 - Very deep downloaded paths can exceed the traditional Windows path limit. When a mirrored output path is longer than 240 characters, `extract_folder.py` automatically writes that result under `extracted_details/_long_paths/...` and records the original `relative_path` plus final `output` path in `summary.json`. You can change this threshold with `--max-output-path-length`, or disable the fallback with `--max-output-path-length 0`.
 
 Extract one document directly with the legacy extractor:

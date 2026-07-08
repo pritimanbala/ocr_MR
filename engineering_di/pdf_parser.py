@@ -16,6 +16,7 @@ from engineering_di.models import (
     Drawing,
     Image,
     Page,
+    Polygon,
     Rectangle,
     TextBlock,
     TextSpan,
@@ -61,7 +62,7 @@ class PyMuPDFDocumentParser:
     def _parse_page(self, page: Any, page_number: int) -> Page:
         page_bbox = bbox_from_rect(page.rect)
         blocks, spans, words, tokens = self._extract_text(page, page_number)
-        drawings, vector_lines, rectangles = self._extract_drawings(page, page_number)
+        drawings, vector_lines, rectangles, polygons = self._extract_drawings(page, page_number)
         images = self._extract_images(page, page_number)
         return Page(
             number=page_number,
@@ -74,6 +75,7 @@ class PyMuPDFDocumentParser:
             drawings=drawings,
             vector_lines=vector_lines,
             rectangles=rectangles,
+            polygons=polygons,
             images=images,
         )
 
@@ -192,22 +194,26 @@ class PyMuPDFDocumentParser:
             )
         return words
 
-    def _extract_drawings(self, page: Any, page_number: int) -> tuple[list[Drawing], list[VectorLine], list[Rectangle]]:
+    def _extract_drawings(self, page: Any, page_number: int) -> tuple[list[Drawing], list[VectorLine], list[Rectangle], list[Polygon]]:
         drawings: list[Drawing] = []
         vector_lines: list[VectorLine] = []
         rectangles: list[Rectangle] = []
+        polygons: list[Polygon] = []
 
         for drawing_index, drawing in enumerate(page.get_drawings()):
             drawing_id = f"p{page_number}.drawing{drawing_index}"
             line_ids: list[str] = []
             rectangle_ids: list[str] = []
+            polygon_ids: list[str] = []
             curve_count = 0
-            polygon_count = 0
             raw_items: list[dict[str, Any]] = []
+            path_points: list[Point] = []
 
             for item_index, item in enumerate(drawing.get("items", [])):
                 op = item[0]
-                raw_items.append(normalize_drawing_item(item))
+                normalized_item = normalize_drawing_item(item)
+                raw_items.append(normalized_item)
+                path_points.extend(tuple(point) for point in normalized_item.get("points", []))
                 if op == "l":
                     p0 = point_from_any(item[1])
                     p1 = point_from_any(item[2])
@@ -221,13 +227,18 @@ class PyMuPDFDocumentParser:
                     rectangle_id = f"{drawing_id}.rect{len(rectangle_ids)}"
                     rectangle_ids.append(rectangle_id)
                     rectangles.append(self._build_rectangle(rectangle_id, page_number, rect, drawing, drawing_id))
+                    for p0, p1 in rectangle_edges(rect):
+                        line_id = f"{drawing_id}.rectline{len(line_ids)}"
+                        line_ids.append(line_id)
+                        vector_lines.append(self._build_vector_line(line_id, page_number, p0, p1, drawing, drawing_id))
                 elif op in {"c", "qu"}:
                     curve_count += 1
-                else:
-                    # Move/close/fill/path operators are preserved in raw_items. If a
-                    # path contains multiple line segments and is closed, later phases
-                    # can interpret it as a polygon from raw_items.
-                    polygon_count += 1 if drawing.get("closePath") else 0
+
+            polygon_points = normalized_polygon_points(path_points)
+            if polygon_points and (drawing.get("closePath") or len(polygon_points) >= 4):
+                polygon_id = f"{drawing_id}.polygon{len(polygon_ids)}"
+                polygon_ids.append(polygon_id)
+                polygons.append(self._build_polygon(polygon_id, page_number, polygon_points, drawing, drawing_id))
 
             drawing_bbox = bbox_from_rect(drawing.get("rect")) if drawing.get("rect") is not None else bbox_from_items(raw_items)
             drawings.append(
@@ -242,13 +253,14 @@ class PyMuPDFDocumentParser:
                     is_closed=bool(drawing.get("closePath")) if drawing.get("closePath") is not None else None,
                     line_ids=line_ids,
                     rectangle_ids=rectangle_ids,
+                    polygon_ids=polygon_ids,
                     curve_count=curve_count,
-                    polygon_count=polygon_count,
+                    polygon_count=len(polygon_ids),
                     raw_items=raw_items,
                 )
             )
 
-        return drawings, vector_lines, rectangles
+        return drawings, vector_lines, rectangles, polygons
 
     def _build_vector_line(self, line_id: str, page_number: int, p0: Point, p1: Point, drawing: dict[str, Any], drawing_id: str) -> VectorLine:
         orientation = classify_line_orientation(p0, p1, self.line_axis_tolerance)
@@ -272,6 +284,21 @@ class PyMuPDFDocumentParser:
             id=rectangle_id,
             bbox=bbox,
             page_number=page_number,
+            stroke=tuple_or_none(drawing.get("color")),
+            fill=tuple_or_none(drawing.get("fill")),
+            width=to_float_or_none(drawing.get("width")),
+            drawing_id=drawing_id,
+        )
+
+    @staticmethod
+    def _build_polygon(polygon_id: str, page_number: int, points: list[Point], drawing: dict[str, Any], drawing_id: str) -> Polygon:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return Polygon(
+            id=polygon_id,
+            bbox=BoundingBox(min(xs), min(ys), max(xs), max(ys)),
+            page_number=page_number,
+            points=points,
             stroke=tuple_or_none(drawing.get("color")),
             fill=tuple_or_none(drawing.get("fill")),
             width=to_float_or_none(drawing.get("width")),
@@ -366,6 +393,26 @@ def classify_line_orientation(p0: Point, p1: Point, tolerance: float) -> str:
     if abs(p0[0] - p1[0]) <= tolerance:
         return "vertical"
     return "diagonal"
+
+
+def rectangle_edges(rect: BoundingBox) -> list[tuple[Point, Point]]:
+    return [
+        ((rect.x0, rect.y0), (rect.x1, rect.y0)),
+        ((rect.x1, rect.y0), (rect.x1, rect.y1)),
+        ((rect.x1, rect.y1), (rect.x0, rect.y1)),
+        ((rect.x0, rect.y1), (rect.x0, rect.y0)),
+    ]
+
+
+def normalized_polygon_points(points: list[Point], tolerance: float = 0.01) -> list[Point]:
+    normalized: list[Point] = []
+    for point in points:
+        if normalized and abs(normalized[-1][0] - point[0]) <= tolerance and abs(normalized[-1][1] - point[1]) <= tolerance:
+            continue
+        normalized.append(point)
+    if len(normalized) > 2 and abs(normalized[0][0] - normalized[-1][0]) <= tolerance and abs(normalized[0][1] - normalized[-1][1]) <= tolerance:
+        normalized.pop()
+    return normalized
 
 
 def normalize_drawing_item(item: Any) -> dict[str, Any]:

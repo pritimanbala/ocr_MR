@@ -240,6 +240,164 @@ def extract_parameters_from_text(text: str) -> list[dict[str, Any]]:
     return merge_duplicates(parameters)
 
 
+def clean_cell_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def docx_table_rows(table: Any) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row in table.rows:
+        cells = [clean_cell_text(cell.text) for cell in row.cells]
+        if any(cells):
+            rows.append(cells)
+    return rows
+
+
+def is_checklist_header(cells: list[str]) -> bool:
+    normalized = [cell.lower() for cell in cells]
+    return any("description" in cell for cell in normalized) and any("vendor" in cell and "answer" in cell for cell in normalized)
+
+
+def header_index(headers: list[str], *needles: str) -> int | None:
+    normalized_needles = [needle.lower() for needle in needles]
+    for index, header in enumerate(headers):
+        normalized_header = header.lower()
+        if all(needle in normalized_header for needle in normalized_needles):
+            return index
+    return None
+
+
+def ensure_unique_headers(headers: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for index, header in enumerate(headers, start=1):
+        name = clean_cell_text(header) or f"Column {index}"
+        count = seen.get(name, 0) + 1
+        seen[name] = count
+        unique.append(name if count == 1 else f"{name} {count}")
+    return unique
+
+
+def with_checklist_serial_numbers(rows: list[list[str]]) -> list[list[str]]:
+    header_row_index = next((index for index, cells in enumerate(rows) if is_checklist_header(cells)), None)
+    if header_row_index is None:
+        return rows
+
+    hydrated = [cells.copy() for cells in rows]
+    headers = [cell.lower() for cell in hydrated[header_row_index]]
+    serial_index = header_index(headers, "sl") or header_index(headers, "no")
+    description_index = header_index(headers, "description")
+    if serial_index is None or description_index is None:
+        return hydrated
+
+    serial_number = 1
+    for cells in hydrated[header_row_index + 1 :]:
+        description = cells[description_index] if description_index < len(cells) else ""
+        if not description:
+            continue
+        if serial_index < len(cells) and not cells[serial_index]:
+            cells[serial_index] = f"{serial_number}."
+        serial_number += 1
+    return hydrated
+
+
+def extract_docx_tables(document: Any, section: str | None) -> list[dict[str, Any]]:
+    extracted_tables: list[dict[str, Any]] = []
+    for table_index, table in enumerate(document.tables, start=1):
+        rows = with_checklist_serial_numbers(docx_table_rows(table))
+        if not rows:
+            continue
+
+        header_row_index = next((index for index, cells in enumerate(rows) if is_checklist_header(cells)), 0)
+        headers = ensure_unique_headers(rows[header_row_index])
+        body_rows = rows[header_row_index + 1 :]
+
+        extracted_tables.append({
+            "table": table_index,
+            "section": section,
+            "headers": headers,
+            "rows": [
+                {
+                    "row": row_index,
+                    "cells": {
+                        headers[column_index]: cells[column_index] if column_index < len(cells) else ""
+                        for column_index in range(len(headers))
+                    },
+                }
+                for row_index, cells in enumerate(body_rows, start=1)
+                if any(cells)
+            ],
+        })
+    return extracted_tables
+
+
+def extract_parameters_from_docx_tables(document: Any, section: str | None) -> list[dict[str, Any]]:
+    parameters: list[dict[str, Any]] = []
+    for table_index, table in enumerate(document.tables, start=1):
+        rows = with_checklist_serial_numbers(docx_table_rows(table))
+        if not rows:
+            continue
+
+        header_row_index = next((index for index, cells in enumerate(rows) if is_checklist_header(cells)), None)
+        if header_row_index is None:
+            continue
+
+        headers = ensure_unique_headers(rows[header_row_index])
+        normalized_headers = [header.lower() for header in headers]
+        serial_index = header_index(normalized_headers, "sl") or header_index(normalized_headers, "no")
+        description_index = next(index for index, header in enumerate(normalized_headers) if "description" in header)
+        answer_index = header_index(normalized_headers, "vendor", "answer")
+        clarification_index = header_index(normalized_headers, "clarification")
+
+        for row_number, cells in enumerate(rows[header_row_index + 1 :], start=1):
+            description = cells[description_index] if description_index < len(cells) else ""
+            if not description:
+                continue
+
+            serial_number = cells[serial_index] if serial_index is not None and serial_index < len(cells) else str(row_number)
+            answer = cells[answer_index] if answer_index is not None and answer_index < len(cells) else ""
+            clarification = cells[clarification_index] if clarification_index is not None and clarification_index < len(cells) else ""
+            row_cells = {
+                headers[column_index]: cells[column_index] if column_index < len(cells) else ""
+                for column_index in range(len(headers))
+            }
+            parameter: dict[str, Any] = {
+                "section": section,
+                "table": table_index,
+                "row": row_number,
+                "serial_number": serial_number,
+                "parameter": description,
+                "description": description,
+                "vendor_answer": answer or None,
+                "value": answer or None,
+                "cells": row_cells,
+                "mandatory": bool(MANDATORY_PATTERN.search(description)),
+            }
+            if clarification:
+                parameter["clarification"] = clarification
+            parameters.append(parameter)
+
+    return parameters
+
+
+def infer_docx_section(lines: list[str]) -> str | None:
+    for line in lines:
+        normalized = clean_cell_text(line)
+        if "|" in normalized:
+            continue
+        if normalized.upper() == "TECHNICAL CHECK LIST":
+            return "Technical Check List"
+
+    for line in lines:
+        normalized = clean_cell_text(line)
+        if "|" in normalized:
+            continue
+        section = is_probable_section(normalized)
+        if section:
+            return section
+    return None
+
+
 def extract_text_with_pdfplumber(pdf_path: Path) -> list[PageText]:
     pdfplumber = import_optional("pdfplumber")
     pages: list[PageText] = []
@@ -282,13 +440,23 @@ def extract_docx(docx_path: Path) -> dict[str, Any]:
     docx = import_optional("docx")
     document = docx.Document(str(docx_path))
     lines: list[str] = []
+    for section in document.sections:
+        lines.extend(paragraph.text for paragraph in section.header.paragraphs if paragraph.text.strip())
+        for table in section.header.tables:
+            for cells in docx_table_rows(table):
+                lines.append(" | ".join(cells))
     lines.extend(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip())
     for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
-            if any(cells):
-                lines.append(" | ".join(cells))
-    return build_result(docx_path, [PageText(page=1, text="\n".join(lines), source="python-docx")])
+        for cells in docx_table_rows(table):
+            lines.append(" | ".join(cells))
+
+    result = build_result(docx_path, [PageText(page=1, text="\n".join(lines), source="python-docx")])
+    section = infer_docx_section(lines)
+    result["tables"] = extract_docx_tables(document, section)
+    table_parameters = extract_parameters_from_docx_tables(document, section)
+    if table_parameters:
+        result["parameters"] = table_parameters
+    return result
 
 
 def extract_pptx(pptx_path: Path) -> dict[str, Any]:

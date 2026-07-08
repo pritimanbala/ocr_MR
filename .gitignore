@@ -32,5 +32,5 @@ build/__pycache__/
 *.jsonl
 
 # Generated extraction output
-extracted_details/
+output/
 Pumps/

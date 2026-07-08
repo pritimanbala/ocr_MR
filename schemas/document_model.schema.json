@@ -14,7 +14,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["number", "bbox", "rotation", "text_blocks", "text_spans", "words", "tokens", "drawings", "vector_lines", "rectangles", "images"],
+          "required": ["number", "bbox", "rotation", "text_blocks", "text_spans", "words", "tokens", "drawings", "vector_lines", "rectangles", "polygons", "images"],
         "properties": {
           "number": { "type": "integer", "minimum": 1 },
           "bbox": { "$ref": "#/$defs/bbox" },
@@ -26,10 +26,17 @@
           "drawings": { "type": "array" },
           "vector_lines": { "type": "array" },
           "rectangles": { "type": "array" },
-          "images": { "type": "array" }
+          "polygons": { "type": "array" },
+          "images": { "type": "array" },
+          "layout_regions": { "type": "array" },
+          "tables": { "type": "array" },
+          "cells": { "type": "array" },
+          "forms": { "type": "array" }
         }
       }
-    }
+    },
+    "cell_graphs": { "type": "array" },
+    "semantic_parameters": { "type": "array" }
   },
   "$defs": {
     "bbox": {

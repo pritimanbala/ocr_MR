@@ -36,6 +36,32 @@ class BoundingBox:
     def area(self) -> float:
         return self.width * self.height
 
+    def intersects(self, other: "BoundingBox") -> bool:
+        return self.x0 < other.x1 and self.x1 > other.x0 and self.y0 < other.y1 and self.y1 > other.y0
+
+    def intersection(self, other: "BoundingBox") -> "BoundingBox | None":
+        if not self.intersects(other):
+            return None
+        return BoundingBox(max(self.x0, other.x0), max(self.y0, other.y0), min(self.x1, other.x1), min(self.y1, other.y1))
+
+    def intersection_area(self, other: "BoundingBox") -> float:
+        intersection = self.intersection(other)
+        return intersection.area if intersection else 0.0
+
+    def contains_point(self, x: float, y: float, tolerance: float = 0.0) -> bool:
+        return self.x0 - tolerance <= x <= self.x1 + tolerance and self.y0 - tolerance <= y <= self.y1 + tolerance
+
+    def contains_box(self, other: "BoundingBox", tolerance: float = 0.0) -> bool:
+        return (
+            self.x0 - tolerance <= other.x0
+            and self.y0 - tolerance <= other.y0
+            and self.x1 + tolerance >= other.x1
+            and self.y1 + tolerance >= other.y1
+        )
+
+    def expand(self, amount: float) -> "BoundingBox":
+        return BoundingBox(self.x0 - amount, self.y0 - amount, self.x1 + amount, self.y1 + amount)
+
     def to_dict(self) -> dict[str, float]:
         return {"x0": self.x0, "y0": self.y0, "x1": self.x1, "y1": self.y1, "width": self.width, "height": self.height}
 
@@ -140,6 +166,20 @@ class Rectangle:
 
 
 @dataclass(frozen=True, slots=True)
+class Polygon:
+    """Closed or polygon-like vector path extracted from drawing commands."""
+
+    id: str
+    bbox: BoundingBox
+    page_number: int
+    points: list[tuple[float, float]]
+    stroke: tuple[float, ...] | None = None
+    fill: tuple[float, ...] | None = None
+    width: float | None = None
+    drawing_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Drawing:
     """Raw vector drawing path with normalized metadata and primitive counts."""
 
@@ -153,6 +193,7 @@ class Drawing:
     is_closed: bool | None = None
     line_ids: list[str] = field(default_factory=list)
     rectangle_ids: list[str] = field(default_factory=list)
+    polygon_ids: list[str] = field(default_factory=list)
     curve_count: int = 0
     polygon_count: int = 0
     raw_items: list[dict[str, Any]] = field(default_factory=list)
@@ -174,6 +215,86 @@ class Image:
     filter: str | None = None
 
 
+LayoutRegionType = Literal["title", "table", "text", "footer", "header", "form", "figure", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutRegion:
+    """Detected structural page region from a layout model or rule engine."""
+
+    id: str
+    bbox: BoundingBox
+    page_number: int
+    region_type: LayoutRegionType
+    confidence: float
+    detector: str
+
+
+@dataclass(frozen=True, slots=True)
+class TableCell:
+    """Geometry-first table cell reconstructed before semantic extraction."""
+
+    id: str
+    bbox: BoundingBox
+    page_number: int
+    row: int
+    column: int
+    row_span: int = 1
+    col_span: int = 1
+    token_ids: list[str] = field(default_factory=list)
+    text: str = ""
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class Table:
+    """Independent table or form grid with reconstructed cells."""
+
+    id: str
+    bbox: BoundingBox
+    page_number: int
+    cell_ids: list[str] = field(default_factory=list)
+    source: Literal["geometry", "tatr", "hybrid"] = "geometry"
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class CellGraph:
+    """Graph relationships between cells in a table."""
+
+    table_id: str
+    page_number: int
+    cells: list[TableCell] = field(default_factory=list)
+    horizontal_edges: list[tuple[str, str]] = field(default_factory=list)
+    vertical_edges: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class FormField:
+    """Geometry-preserved form field candidate."""
+
+    id: str
+    bbox: BoundingBox
+    page_number: int
+    label_token_ids: list[str] = field(default_factory=list)
+    value_token_ids: list[str] = field(default_factory=list)
+    field_type: Literal["key_value", "checkbox", "radio", "unknown"] = "unknown"
+    confidence: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticParameter:
+    """Canonical normalized parameter emitted after geometry is complete."""
+
+    parameter: str
+    value: Any
+    section: str | None = None
+    unit: str | None = None
+    operator: str | None = None
+    mandatory: bool | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True)
 class Page:
     """Complete geometry-preserving representation of one PDF page."""
@@ -188,7 +309,12 @@ class Page:
     drawings: list[Drawing] = field(default_factory=list)
     vector_lines: list[VectorLine] = field(default_factory=list)
     rectangles: list[Rectangle] = field(default_factory=list)
+    polygons: list[Polygon] = field(default_factory=list)
     images: list[Image] = field(default_factory=list)
+    layout_regions: list[LayoutRegion] = field(default_factory=list)
+    tables: list[Table] = field(default_factory=list)
+    cells: list[TableCell] = field(default_factory=list)
+    forms: list[FormField] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +325,8 @@ class Document:
     page_count: int
     metadata: dict[str, Any]
     pages: list[Page]
+    cell_graphs: list[CellGraph] = field(default_factory=list)
+    semantic_parameters: list[SemanticParameter] = field(default_factory=list)
     parser: str = "pymupdf"
     schema_version: str = "phase1.document.v1"
 

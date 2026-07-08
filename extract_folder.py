@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ocr_extract import extract_document, is_supported_document
+from ocr_extract import extract_document, is_supported_document, is_thumbs_database
 
 DEFAULT_MAX_OUTPUT_PATH_LENGTH = 240
 
@@ -43,7 +43,8 @@ def output_path_for(
     """Build the mirrored output path, with a hashed fallback for Windows path limits."""
     relative = input_file.relative_to(input_root)
     mirrored = output_root / relative.parent / f"{relative.name}.extracted.json"
-    if max_output_path_length <= 0 or len(str(mirrored)) <= max_output_path_length:
+    absolute_mirrored = mirrored if mirrored.is_absolute() else Path.cwd() / mirrored
+    if max_output_path_length <= 0 or len(str(absolute_mirrored)) <= max_output_path_length:
         return mirrored
 
     digest = hashlib.sha1(str(relative).encode("utf-8")).hexdigest()
@@ -55,6 +56,8 @@ def iter_supported_files(input_root: Path, include_temp_files: bool = False) -> 
     files: list[Path] = []
     for path in input_root.rglob("*"):
         if not path.is_file() or not is_supported_document(path):
+            continue
+        if is_thumbs_database(path):
             continue
         if not include_temp_files and is_temporary_office_file(path):
             continue

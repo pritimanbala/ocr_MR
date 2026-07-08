@@ -1,9 +1,6 @@
 # Dependencies
 node_modules/
 
-# Project-specific folder (excluded from GitHub as requested)
-Pumps/
-
 # Environment variables
 .env
 .env.local
@@ -33,3 +30,7 @@ build/__pycache__/
 .venv/
 .env
 *.jsonl
+
+# Generated extraction output
+extracted_details/
+Pumps/
